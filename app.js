@@ -124,15 +124,25 @@ async function initCloudSync() {
     cloudClient = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
     const { data, error } = await cloudClient
       .from(cfg.table)
-      .select("state")
+      .select("state, updated_at")
       .eq("id", cfg.rowId)
       .maybeSingle();
     if (error) throw error;
     if (data?.state) {
+      const serverTime = new Date(data.updated_at).getTime();
+      const localTime = new Date(state._lastSaved || 0).getTime();
       const currentSession = state.session;
-      state = mergeWithSeed(data.state);
-      // Si ya habia sesion activa (localStorage), mantenerla
+      const currentScreen = state.active;
+      if (serverTime > localTime) {
+        // Servidor es más reciente - usar datos del servidor
+        state = mergeWithSeed(data.state);
+        state._lastSaved = data.updated_at;
+      } else {
+        // Local es más reciente - subir local al servidor
+        await saveCloudState({ ...state, pin: "" }, true);
+      }
       if (currentSession && !state.session) state.session = currentSession;
+      state.active = currentScreen || state.active;
       localStorage.setItem(storageKey, JSON.stringify({ ...state, pin: "" }));
     } else {
       await saveCloudState({ ...state, pin: "" }, true);
@@ -285,7 +295,7 @@ function syncMemberStatuses() {
   state.activePlans.forEach((plan) => {
     if (plan.status === "Activo" && planExpired(plan)) plan.status = "Vencido";
   });
-  state.members.forEach((member) => {
+  state.members.filter((m) => !m.deletedAt).forEach((member) => {
     const hasTrackedPlan = state.activePlans.some((plan) => plan.memberId === member.id);
     const activePlan = state.activePlans.some((plan) => plan.memberId === member.id && plan.status === "Activo" && !planExpired(plan));
     const legacyActive = !hasTrackedPlan && member.due && member.due >= todayISO;
@@ -1114,6 +1124,7 @@ function auditScreen() {
     ...state.incomes.map((item) => ({ ...item, kind: "Ingreso" })),
     ...state.expenses.map((item) => ({ ...item, kind: "Gasto" }))
   ].filter((item) => item.deletedAt);
+  const deletedMembers = state.members.filter((m) => m.deletedAt);
   return `
     ${head("Log de auditoria", `<button class="secondary-btn" id="exportAudit">Exportar log</button>`)}
     <section class="card">
@@ -1125,6 +1136,12 @@ function auditScreen() {
       <h2 class="card-title">Movimientos anulados conservados</h2>
       <div class="list">
         ${deletedMovements.map((item) => `<div class="list-item"><strong>${item.kind}: ${item.name}</strong><span>${item.date} · ${money(item.amount)} · Registrado por ${item.user}</span><small>Anulado por ${item.deletedBy} el ${item.deletedAt}. Autorizacion: ${item.deleteAuthorization}. Codigo: ${item.deleteCodeUsed}. Motivo: ${item.deleteReason || "No indicado"}.</small></div>`).join("") || `<div class="empty">No hay movimientos anulados.</div>`}
+      </div>
+    </section>
+    <section class="card" style="margin-top:16px">
+      <h2 class="card-title">Miembros eliminados conservados</h2>
+      <div class="list">
+        ${deletedMembers.map((m) => `<div class="list-item"><strong>${m.name}</strong><span>CC: ${m.doc} | Tel: ${m.phone}</span><small>Eliminado por ${m.deletedBy} el ${m.deletedAt}. Autorizacion: ${m.deleteAuthorization}. Motivo: ${m.deleteReason || "No indicado"}.</small></div>`).join("") || `<div class="empty">No hay miembros eliminados.</div>`}
       </div>
     </section>`;
 }
@@ -1244,6 +1261,7 @@ document.addEventListener("input", (event) => {
         syncMemberStatuses();
         const query = state.memberQuery.toLowerCase();
         const filtered = state.members.filter((m) => {
+          if (m.deletedAt) return false;
           const matches = `${m.name} ${m.doc} ${m.phone}`.toLowerCase().includes(query);
           const status = state.memberFilter === "todos" || (state.memberFilter === "activos" ? m.active : !m.active);
           return matches && status;
@@ -1254,7 +1272,11 @@ document.addEventListener("input", (event) => {
             <strong>${m.name}</strong>
             <p>CC: ${m.doc}<br>Tel: ${m.phone}<br>Plan: ${m.plan || "Sin plan"}<br>Vence: ${m.due || "Sin fecha"}<br>Cumple: ${m.birthday}</p>
             ${memberPlanSummary(m)}
-            <div class="actions"><button class="secondary-btn" data-message="${m.id}">Mensaje</button><button class="secondary-btn" data-renew="${m.id}">Renovar</button></div>
+            <div class="actions">
+              <button class="secondary-btn" data-message="${m.id}">Mensaje</button>
+              <button class="secondary-btn" data-renew="${m.id}">Renovar</button>
+              <button class="danger-btn" data-delete-member="${m.id}">Eliminar</button>
+            </div>
           </article>`).join("") || `<div class="empty">No hay miembros con ese filtro.</div>`;
       } else {
         render();
@@ -1609,12 +1631,16 @@ function exportAudit() {
     ...state.incomes.map((item) => ({ ...item, kind: "Ingreso" })),
     ...state.expenses.map((item) => ({ ...item, kind: "Gasto" }))
   ].filter((item) => item.deletedAt);
+  const deletedMembers = state.members.filter((m) => m.deletedAt);
   const text = [
     "LOG DE AUDITORIA",
     ...state.audit.map((a) => `${a.at} | ${a.user} | ${a.action} | ${a.detail}`),
     "",
     "MOVIMIENTOS ANULADOS CONSERVADOS",
-    ...deletedMovements.map((item) => `${item.kind} | ${item.date} | ${item.name} | ${money(item.amount)} | Registrado por ${item.user} | Anulado por ${item.deletedBy} | ${item.deletedAt} | Autorizacion: ${item.deleteAuthorization} | Codigo: ${item.deleteCodeUsed} | Motivo: ${item.deleteReason || "No indicado"}`)
+    ...deletedMovements.map((item) => `${item.kind} | ${item.date} | ${item.name} | ${money(item.amount)} | Registrado por ${item.user} | Anulado por ${item.deletedBy} | ${item.deletedAt} | Autorizacion: ${item.deleteAuthorization} | Codigo: ${item.deleteCodeUsed} | Motivo: ${item.deleteReason || "No indicado"}`),
+    "",
+    "MIEMBROS ELIMINADOS CONSERVADOS",
+    ...deletedMembers.map((m) => `${m.name} | CC: ${m.doc} | Tel: ${m.phone} | Eliminado por: ${m.deletedBy} | ${m.deletedAt} | Autorizacion: ${m.deleteAuthorization} | Motivo: ${m.deleteReason || "No indicado"}`)
   ].join("\n");
   download("strongwolf-auditoria.txt", text || "Sin eventos");
 }
@@ -1632,7 +1658,7 @@ function exportUsers() {
 function memberExportRows() {
   return [
     ["id", "nombre", "documento", "telefono", "cumpleanos", "estado", "plan_actual", "vence", "planes_activos", "entradas_restantes", "entradas_totales"],
-    ...state.members.map((member) => {
+    ...state.members.filter((m) => !m.deletedAt).map((member) => {
       const plans = activePlansForMember(member.id);
       return [
         member.id,
