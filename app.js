@@ -129,22 +129,17 @@ async function initCloudSync() {
       .maybeSingle();
     if (error) throw error;
     if (data?.state) {
-      const serverTime = new Date(data.updated_at).getTime();
-      const localTime = new Date(state._lastSaved || 0).getTime();
+      // Siempre tomar los datos del servidor al cargar la pagina
+      // Solo preservar la sesion activa local para no botar al usuario
       const currentSession = state.session;
       const currentScreen = state.active;
-      if (serverTime > localTime) {
-        // Servidor es más reciente - usar datos del servidor
-        state = mergeWithSeed(data.state);
-        state._lastSaved = data.updated_at;
-      } else {
-        // Local es más reciente - subir local al servidor
-        await saveCloudState({ ...state, pin: "" }, true);
-      }
+      state = mergeWithSeed(data.state);
       if (currentSession && !state.session) state.session = currentSession;
       state.active = currentScreen || state.active;
+      state._lastSaved = data.updated_at;
       localStorage.setItem(storageKey, JSON.stringify({ ...state, pin: "" }));
     } else {
+      // No hay datos en servidor - subir los locales
       await saveCloudState({ ...state, pin: "" }, true);
     }
     cloudHydrated = true;
@@ -1932,5 +1927,5 @@ if ("serviceWorker" in navigator) {
 
 render();
 
-// Sincronizacion automatica cada 30 segundos
-setInterval(pollCloudState, 30000);
+// Sincronizacion automatica cada 15 segundos
+setInterval(pollCloudState, 15000);
