@@ -1,4 +1,4 @@
-const CACHE_NAME = "strongwolf-pro-v8";
+const CACHE_NAME = "strongwolf-pro-v10";
 const ASSETS = ["./", "./index.html", "./styles.css", "./app.js", "./cloud-config.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
