@@ -137,6 +137,7 @@ async function initCloudSync() {
       if (currentSession && !state.session) state.session = currentSession;
       state.active = currentScreen || state.active;
       state._lastSaved = data.updated_at;
+      pollCloudState._lastServerTime = new Date(data.updated_at).getTime();
       localStorage.setItem(storageKey, JSON.stringify({ ...state, pin: "" }));
     } else {
       // No hay datos en servidor - subir los locales
@@ -1900,10 +1901,11 @@ async function pollCloudState() {
       .eq("id", cfg.rowId)
       .maybeSingle();
     if (error || !data?.state) return;
-    // Solo actualizar si el servidor tiene datos mas recientes
     const serverTime = new Date(data.updated_at).getTime();
-    const localTime = new Date(state._lastSaved || 0).getTime();
-    if (serverTime <= localTime) return;
+    const lastPollTime = pollCloudState._lastServerTime || 0;
+    // Solo actualizar si el servidor cambió desde el ultimo poll
+    if (serverTime <= lastPollTime) return;
+    pollCloudState._lastServerTime = serverTime;
     const currentSession = state.session;
     const currentScreen = state.active;
     state = mergeWithSeed(data.state);
@@ -1914,7 +1916,6 @@ async function pollCloudState() {
     render();
     showToast("↻ Datos actualizados desde otro dispositivo.");
   } catch (err) {
-    // Error silencioso en el poll, no interrumpir al usuario
     console.warn("Poll error:", err);
   }
 }
@@ -1927,5 +1928,5 @@ if ("serviceWorker" in navigator) {
 
 render();
 
-// Sincronizacion automatica cada 15 segundos
-setInterval(pollCloudState, 15000);
+// Sincronizacion automatica cada 5 segundos
+setInterval(pollCloudState, 5000);
